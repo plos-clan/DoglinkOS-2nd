@@ -1,4 +1,4 @@
-use alloc::{borrow::ToOwned, boxed::Box, vec::Vec};
+use alloc::{borrow::ToOwned, boxed::Box, collections::vec_deque::VecDeque, vec::Vec};
 use x86_64::instructions::port::{PortReadOnly, PortWriteOnly};
 
 use crate::{
@@ -13,6 +13,7 @@ struct Rtl8139 {
     mac: [u8; 6],
     rx_buffer: DmaBuffer,
     cur_rx: u16,
+    frame_queue: VecDeque<Vec<u8>>,
 }
 
 impl Rtl8139 {
@@ -66,6 +67,7 @@ impl Rtl8139 {
             mac,
             rx_buffer,
             cur_rx: 0,
+            frame_queue: VecDeque::new(),
         }
     }
 }
@@ -104,10 +106,10 @@ impl super::Nic for Rtl8139 {
                     unsafe { *(rx_buffer_ptr.add(read_index as usize) as *const _) };
                 let rx_status = (rx_header & 0xffff) as u16;
                 let rx_size = (rx_header >> 16) as u16;
-                println!(
-                    "[DEBUG] rtl8139: cur_rx={} header={:#010x} status={:#06x} size={}",
-                    read_index, rx_header, rx_status, rx_size
-                );
+                // println!(
+                //     "[DEBUG] rtl8139: cur_rx={} header={:#010x} status={:#06x} size={}",
+                //     read_index, rx_header, rx_status, rx_size
+                // );
                 let rx_size = rx_size as usize;
                 if !(MIN_PACKET_SIZE..=MAX_PACKET_SIZE).contains(&rx_size) {
                     // An invalid length cannot be used to find the next ring
@@ -140,7 +142,7 @@ impl super::Nic for Rtl8139 {
                             core::slice::from_raw_parts(data_ptr, len).to_owned()
                         }
                     };
-                    println!("[DEBUG] rtl8139: rx packet {packet:?}");
+                    self.frame_queue.push_back(packet);
                 }
                 let read_index = (read_index as usize + rx_size + 7) & !3;
                 let read_index = (read_index % RX_RING_SIZE) as u16;
@@ -154,6 +156,10 @@ impl super::Nic for Rtl8139 {
                 println!("[WARN] rtl8139: receive poll budget exhausted");
             }
         }
+    }
+
+    fn pop_frame(&mut self) -> Result<Vec<u8>, ()> {
+        self.frame_queue.pop_front().ok_or(())
     }
 }
 

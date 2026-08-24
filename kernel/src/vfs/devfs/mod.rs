@@ -2,6 +2,7 @@ mod cmdline;
 mod disk;
 mod filesystem;
 mod initrd;
+mod nic;
 mod nvme;
 mod pcspk;
 mod power;

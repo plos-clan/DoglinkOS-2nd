@@ -3,11 +3,12 @@ use spin::{lazy::Lazy, mutex::Mutex};
 
 mod rtl8139;
 
-trait Nic: Send {
+pub trait Nic: Send {
     fn mac(&self) -> [u8; 6];
 
-    #[allow(dead_code)]
     fn poll(&mut self);
+
+    fn pop_frame(&mut self) -> Result<Vec<u8>, ()>;
 
     fn format_mac(&self) -> String {
         let mac = self.mac();
@@ -18,7 +19,7 @@ trait Nic: Send {
     }
 }
 
-static NICS: Lazy<Mutex<Vec<Box<dyn Nic>>>> = Lazy::new(|| Mutex::new(Vec::new()));
+pub static NICS: Lazy<Mutex<Vec<Box<dyn Nic>>>> = Lazy::new(|| Mutex::new(Vec::new()));
 
 pub fn init() {
     rtl8139::init();

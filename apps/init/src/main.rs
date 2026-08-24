@@ -3,6 +3,7 @@
 
 mod icmp;
 mod netdump;
+mod netdump2;
 
 use dlos_app_rt::*;
 
@@ -77,6 +78,7 @@ fn print_help() {
     println!("  poweroff           Power off the machine");
     println!("  reboot             Reboot the machine");
     println!("  netdump            Dump recieved packets from upppd");
+    println!("  netdump2           Dump recieved packets from kernel NIC devices");
     println!();
     println!("External commands:");
     println!("  /bin/<name>        Execute a command from /bin");
@@ -269,6 +271,11 @@ fn shell_main_loop() {
             } else {
                 println!("error while opening /dev/power");
             }
+        } else if let Some(cnt) = cmd
+            .strip_prefix("netdump2")
+            .map(|x| x.trim().parse().unwrap_or(4))
+        {
+            netdump2::main(cnt);
         } else if let Some(cnt) = cmd
             .strip_prefix("netdump")
             .map(|x| x.trim().parse().unwrap_or(4))

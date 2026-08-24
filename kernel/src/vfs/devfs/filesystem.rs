@@ -30,6 +30,8 @@ impl VfsDirectory for DevFileSystem {
             Ok(file)
         } else if let Ok(file) = super::power::open(path) {
             Ok(file)
+        } else if let Ok(file) = super::nic::open(path) {
+            Ok(file)
         } else {
             Err(())
         }
@@ -66,6 +68,10 @@ impl VfsDirectory for DevFileSystem {
 
         for (id, _) in crate::blockdev::usb::online_devices() {
             entries.push(DirEntry::new(false, &crate::blockdev::usb::name(id)));
+        }
+
+        for i in 0..crate::net::NICS.lock().len() {
+            entries.push(DirEntry::new(false, &alloc::format!("nic{i}")));
         }
 
         Ok(Arc::new(Mutex::new(SnapshotDirectory::new(entries))))
