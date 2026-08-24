@@ -1,4 +1,4 @@
-use alloc::boxed::Box;
+use alloc::{borrow::ToOwned, boxed::Box, vec::Vec};
 use x86_64::instructions::port::{PortReadOnly, PortWriteOnly};
 
 use crate::{
@@ -29,8 +29,8 @@ impl Rtl8139 {
     fn from_io_base(io_base: u16) -> Self {
         // read MAC address
         let mut mac = [0u8; 6];
-        for i in 0..6 {
-            mac[i] = unsafe { PortReadOnly::new(io_base + i as u16).read() };
+        for (i, b) in mac.iter_mut().enumerate() {
+            *b = unsafe { PortReadOnly::new(io_base + i as u16).read() };
         }
 
         // software reset
@@ -78,8 +78,13 @@ impl super::Nic for Rtl8139 {
     }
 
     fn poll(&mut self) {
+        const CMD_BUFFER_EMPTY: u8 = 0x01;
         const ROK: u16 = 0x0001;
         const TOK: u16 = 0x0004;
+        const RX_RING_SIZE: usize = 8192;
+        const MIN_PACKET_SIZE: usize = 4; // Ethernet FCS
+        const MAX_PACKET_SIZE: usize = 1522; // Ethernet frame plus FCS
+        const MAX_PACKETS_PER_POLL: usize = 64;
         let status: u16 = unsafe { PortReadOnly::new(self.io_base + 0x3e).read() };
         unsafe {
             PortWriteOnly::new(self.io_base + 0x3e).write(status);
@@ -88,28 +93,66 @@ impl super::Nic for Rtl8139 {
             println!("[DEBUG] rtl8139: sent packet");
         }
         if status & ROK != 0 {
-            let mut read_index = self.cur_rx;
-            let rx_buffer_ptr = self.rx_buffer.as_ptr();
-            let rx_header: u32 = unsafe { *(rx_buffer_ptr.add(read_index as usize) as *const _) };
-            let rx_status = (rx_header & 0xffff) as u16;
-            let rx_size = (rx_header >> 16) as u16;
-            if rx_status & 0x0001 != 0 {
-                let packet = unsafe {
-                    let data_ptr = rx_buffer_ptr.add(read_index as usize + 4).cast_const();
-                    let len = rx_size as usize - 4;
-                    core::slice::from_raw_parts(data_ptr, len)
-                };
-                println!("[DEBUG] rtl8139: rx packet {packet:?}");
+            let mut packets = 0;
+            while packets < MAX_PACKETS_PER_POLL
+                && unsafe { PortReadOnly::<u8>::new(self.io_base + 0x37).read() } & CMD_BUFFER_EMPTY
+                    == 0
+            {
+                let read_index = self.cur_rx;
+                let rx_buffer_ptr = self.rx_buffer.as_ptr();
+                let rx_header: u32 =
+                    unsafe { *(rx_buffer_ptr.add(read_index as usize) as *const _) };
+                let rx_status = (rx_header & 0xffff) as u16;
+                let rx_size = (rx_header >> 16) as u16;
+                println!(
+                    "[DEBUG] rtl8139: cur_rx={} header={:#010x} status={:#06x} size={}",
+                    read_index, rx_header, rx_status, rx_size
+                );
+                let rx_size = rx_size as usize;
+                if !(MIN_PACKET_SIZE..=MAX_PACKET_SIZE).contains(&rx_size) {
+                    // An invalid length cannot be used to find the next ring
+                    // entry.  Leaving cur_rx unchanged would make poll() read
+                    // this same header forever.
+                    println!("[WARN] rtl8139: invalid RX size {rx_size}; stopping receive poll");
+                    break;
+                }
+                if rx_status & 0x0001 != 0 {
+                    let packet = if read_index as usize + rx_size > RX_RING_SIZE {
+                        let len = rx_size - 4;
+                        let mut res = Vec::with_capacity(len);
+                        res.extend_from_slice(unsafe {
+                            core::slice::from_raw_parts(
+                                rx_buffer_ptr.add(read_index as usize + 4).cast_const(),
+                                RX_RING_SIZE - read_index as usize - 4,
+                            )
+                        });
+                        res.extend_from_slice(unsafe {
+                            core::slice::from_raw_parts(
+                                rx_buffer_ptr,
+                                read_index as usize + rx_size - RX_RING_SIZE,
+                            )
+                        });
+                        res
+                    } else {
+                        unsafe {
+                            let data_ptr = rx_buffer_ptr.add(read_index as usize + 4).cast_const();
+                            let len = rx_size - 4;
+                            core::slice::from_raw_parts(data_ptr, len).to_owned()
+                        }
+                    };
+                    println!("[DEBUG] rtl8139: rx packet {packet:?}");
+                }
+                let read_index = (read_index as usize + rx_size + 7) & !3;
+                let read_index = (read_index % RX_RING_SIZE) as u16;
+                unsafe {
+                    PortWriteOnly::new(self.io_base + 0x38).write(read_index.wrapping_sub(16));
+                }
+                self.cur_rx = read_index;
+                packets += 1;
             }
-            read_index += rx_size + 7;
-            read_index &= !3;
-            if read_index > 8192 {
-                read_index -= 8192;
+            if packets == MAX_PACKETS_PER_POLL {
+                println!("[WARN] rtl8139: receive poll budget exhausted");
             }
-            unsafe {
-                PortWriteOnly::new(self.io_base + 0x38).write(read_index - 16);
-            }
-            self.cur_rx = read_index;
         }
     }
 }
